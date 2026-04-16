@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import signal
 import subprocess
+import ctypes
+import ctypes.util
 from dataclasses import dataclass
 
 import gi
@@ -15,6 +17,7 @@ from gi.repository import GLib, Gst, GstRtspServer
 Gst.init(None)
 
 LOGGER = logging.getLogger("video2rtsp")
+_GLIB_HANDLER_IDS: list[tuple[str, int]] = []
 
 
 class RtspServerError(RuntimeError):
@@ -27,9 +30,10 @@ class ServerConfig:
     host: str
     port: int
     path: str
-    video_bitrate_kbps: int = 2500
+    video_bitrate_kbps: int = 6000
     audio_bitrate_bps: int = 128000
     loop: bool = False
+    prefer_live_edge: bool = False
 
 
 def normalise_mount_path(path: str) -> str:
@@ -43,11 +47,72 @@ def endpoint_for(config: ServerConfig) -> str:
     return f"rtsp://{config.host}:{config.port}{config.path}"
 
 
-def preview_command(endpoint: str) -> list[str]:
-    return [
+def screen_bounds() -> tuple[int, int, int, int] | None:
+    class CGPoint(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+    class CGSize(ctypes.Structure):
+        _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+    class CGRect(ctypes.Structure):
+        _fields_ = [("origin", CGPoint), ("size", CGSize)]
+
+    framework = ctypes.util.find_library("CoreGraphics")
+    if framework is None:
+        return None
+
+    core_graphics = ctypes.cdll.LoadLibrary(framework)
+    core_graphics.CGMainDisplayID.restype = ctypes.c_uint32
+    core_graphics.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+    core_graphics.CGDisplayBounds.restype = CGRect
+
+    display_id = core_graphics.CGMainDisplayID()
+    bounds = core_graphics.CGDisplayBounds(display_id)
+
+    width = int(bounds.size.width)
+    height = int(bounds.size.height)
+    if width <= 0 or height <= 0:
+        return None
+
+    return (
+        int(bounds.origin.x),
+        int(bounds.origin.y),
+        width,
+        height,
+    )
+
+
+def preview_geometry() -> tuple[int, int, int, int]:
+    bounds = screen_bounds()
+    if bounds is None:
+        return (960, 540, 960, 0)
+
+    origin_x, origin_y, screen_width, screen_height = bounds
+    width = max(320, screen_width // 2)
+    height = max(180, screen_height // 2)
+    left = origin_x + screen_width - width
+    top = origin_y
+    return (width, height, left, top)
+
+
+def preview_command(endpoint: str, verbose: bool) -> list[str]:
+    width, height, left, top = preview_geometry()
+    command = [
         "ffplay",
+        "-hide_banner",
+        "-loglevel",
+        "warning" if verbose else "error",
         "-window_title",
         "video2rtsp preview",
+        "-alwaysontop",
+        "-x",
+        str(width),
+        "-y",
+        str(height),
+        "-left",
+        str(left),
+        "-top",
+        str(top),
         "-rtsp_transport",
         "tcp",
         "-fflags",
@@ -56,6 +121,49 @@ def preview_command(endpoint: str) -> list[str]:
         "low_delay",
         endpoint,
     ]
+    return command
+
+
+def bring_process_to_front(pid: int) -> None:
+    script = (
+        'tell application "System Events" '
+        f'to set frontmost of (first process whose unix id is {pid}) to true'
+    )
+    subprocess.run(
+        ["osascript", "-e", script],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _drop_glib_log(
+    log_domain: str | None,
+    log_level: GLib.LogLevelFlags,
+    message: str,
+    user_data: object | None,
+) -> None:
+    return
+
+
+def configure_runtime_output(verbose: bool) -> None:
+    Gst.debug_set_default_threshold(
+        Gst.DebugLevel.DEBUG if verbose else Gst.DebugLevel.ERROR
+    )
+
+    if verbose or _GLIB_HANDLER_IDS:
+        return
+
+    noisy_domains = ("GStreamer", "GStreamer-GL", "GLib-GIRepository")
+    noisy_levels = (
+        GLib.LogLevelFlags.LEVEL_MESSAGE
+        | GLib.LogLevelFlags.LEVEL_INFO
+        | GLib.LogLevelFlags.LEVEL_DEBUG
+        | GLib.LogLevelFlags.LEVEL_WARNING
+    )
+    for domain in noisy_domains:
+        handler_id = GLib.log_set_handler(domain, noisy_levels, _drop_glib_log, None)
+        _GLIB_HANDLER_IDS.append((domain, handler_id))
 
 
 def _make(factory_name: str, name: str | None = None) -> Gst.Element:
@@ -85,6 +193,7 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
         self._bus_watchers: list[Gst.Bus] = []
         self._loop_durations: dict[int, int] = {}
         self._loop_attempts: dict[int, int] = {}
+        self._live_seek_attempts: dict[int, int] = {}
         self.set_shared(True)
         self.set_suspend_mode(GstRtspServer.RTSPSuspendMode.NONE)
         self.connect("media-configure", self._on_media_configure)
@@ -110,10 +219,17 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
         return source_bin
 
     def _new_source(self, source_bin: Gst.Bin) -> Gst.Element:
-        source = _make("uridecodebin", "source")
+        source_factory = "uridecodebin3"
+        if Gst.ElementFactory.find(source_factory) is None:
+            source_factory = "uridecodebin"
+
+        source = _make(source_factory, "source")
         source.set_property("uri", self._config.source_uri)
         source.connect("pad-added", self._on_pad_added, source_bin)
-        source.connect("drained", self._on_source_drained, source_bin)
+        try:
+            source.connect("drained", self._on_source_drained, source_bin)
+        except TypeError:
+            pass
         return source
 
     def _on_media_configure(self, factory: object, media: GstRtspServer.RTSPMedia) -> None:
@@ -132,6 +248,9 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
         if self._config.loop:
             self._loop_attempts[id(element)] = 0
             GLib.timeout_add(100, self._enable_segment_looping, element)
+        elif self._config.prefer_live_edge:
+            self._live_seek_attempts[id(element)] = 0
+            GLib.timeout_add_seconds(5, self._seek_to_live_edge, element)
 
     def _on_bus_message(
         self,
@@ -221,6 +340,53 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
             duration,
         )
 
+    def _seek_to_live_edge(self, element: Gst.Element) -> bool:
+        attempts = self._live_seek_attempts.get(id(element), 0) + 1
+        self._live_seek_attempts[id(element)] = attempts
+
+        target_element: Gst.Element = element
+        if isinstance(element, Gst.Bin):
+            source_element = element.get_by_name("source")
+            if isinstance(source_element, Gst.Element):
+                target_element = source_element
+
+        live_edge = self._live_edge_position(target_element)
+        if live_edge is None and target_element is not element:
+            live_edge = self._live_edge_position(element)
+        if live_edge is None:
+            if attempts >= 100:
+                LOGGER.warning("Could not determine a DVR window for the live source")
+                return False
+            return True
+
+        live_edge_guard = 10 * Gst.SECOND
+        target = max(live_edge - live_edge_guard, 0)
+        if target_element.seek_simple(
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
+            target,
+        ):
+            LOGGER.info("Seeking live source to the live edge")
+            return False
+
+        if attempts >= 100:
+            LOGGER.warning("Could not seek the live source to the live edge")
+            return False
+        return True
+
+    @staticmethod
+    def _live_edge_position(element: Gst.Element) -> int | None:
+        seeking_query = Gst.Query.new_seeking(Gst.Format.TIME)
+        if element.query(seeking_query):
+            _format, seekable, _start, stop = seeking_query.parse_seeking()
+            if seekable and stop not in (-1, Gst.CLOCK_TIME_NONE) and stop > 0:
+                return stop
+
+        success, duration = element.query_duration(Gst.Format.TIME)
+        if success and duration not in (0, Gst.CLOCK_TIME_NONE):
+            return duration
+        return None
+
     def _on_pad_added(
         self,
         source: Gst.Element,
@@ -240,7 +406,7 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
                 "video",
             )
             context["video"] = True
-            LOGGER.info("Attached video branch from %s", self._config.source_uri)
+            LOGGER.debug("Attached video branch from %s", self._config.source_uri)
         elif media_type.startswith("audio/") and not context["audio"]:
             self._link_pad_or_raise(
                 pad,
@@ -248,7 +414,7 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
                 "audio",
             )
             context["audio"] = True
-            LOGGER.info("Attached audio branch from %s", self._config.source_uri)
+            LOGGER.debug("Attached audio branch from %s", self._config.source_uri)
 
     def _add_video_branch(self, source_bin: Gst.Bin) -> Gst.Pad | None:
         queue = _make("queue", "video_queue")
@@ -260,7 +426,7 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
 
         encoder.set_property("bitrate", self._config.video_bitrate_kbps)
         encoder.set_property("key-int-max", 60)
-        encoder.set_property("speed-preset", "ultrafast")
+        encoder.set_property("speed-preset", "superfast")
         encoder.set_property("tune", "zerolatency")
         encoder.set_property("byte-stream", True)
 
@@ -316,7 +482,13 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
             )
 
 
-def serve_forever(config: ServerConfig, preview: bool = False) -> None:
+def serve_forever(
+    config: ServerConfig,
+    preview: bool = False,
+    verbose: bool = False,
+) -> None:
+    configure_runtime_output(verbose)
+
     server = GstRtspServer.RTSPServer()
     server.set_address(config.host)
     server.set_service(str(config.port))
@@ -336,8 +508,22 @@ def serve_forever(config: ServerConfig, preview: bool = False) -> None:
     def launch_preview() -> bool:
         nonlocal preview_process
         stream_endpoint = endpoint_for(config)
-        LOGGER.info("Opening preview window for %s", stream_endpoint)
-        preview_process = subprocess.Popen(preview_command(stream_endpoint))
+        width, height, left, top = preview_geometry()
+        LOGGER.info(
+            "Opening preview window for %s at %sx%s (%s,%s)",
+            stream_endpoint,
+            width,
+            height,
+            left,
+            top,
+        )
+        stdio_target = None if verbose else subprocess.DEVNULL
+        preview_process = subprocess.Popen(
+            preview_command(stream_endpoint, verbose),
+            stdout=stdio_target,
+            stderr=stdio_target,
+        )
+        bring_process_to_front(preview_process.pid)
         return False
 
     def stop_loop(*_: object) -> None:

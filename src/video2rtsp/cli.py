@@ -40,9 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--video-bitrate",
         type=_positive_int,
-        default=2500,
+        default=6000,
         metavar="KBIT_S",
-        help="Output H.264 bitrate in kbit/s (default: 2500)",
+        help="Output H.264 bitrate in kbit/s (default: 6000)",
     )
     parser.add_argument(
         "--audio-bitrate",
@@ -84,7 +84,7 @@ def _positive_int(value: str) -> int:
 
 
 def configure_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+    level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(level=level, format="%(message)s")
 
 
@@ -96,6 +96,15 @@ def ensure_command(name: str) -> None:
 def is_media_uri(value: str) -> bool:
     parsed = urlparse(value)
     return bool(parsed.scheme)
+
+
+def looks_like_live_source(uri: str) -> bool:
+    live_markers = (
+        "source/yt_live_broadcast",
+        "playlist_type/DVR",
+        "live/1",
+    )
+    return all(marker in uri for marker in live_markers)
 
 
 def resolve_source_uri(url: str, direct: bool) -> str:
@@ -162,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.preview:
             ensure_command("ffplay")
 
-        print("Resolving source URL...", file=sys.stderr, flush=True)
+        print("Status: resolving source...", file=sys.stderr, flush=True)
         source_uri = resolve_source_uri(args.url, direct=args.direct)
         config = ServerConfig(
             source_uri=source_uri,
@@ -172,11 +181,16 @@ def main(argv: list[str] | None = None) -> int:
             video_bitrate_kbps=args.video_bitrate,
             audio_bitrate_bps=args.audio_bitrate,
             loop=args.loop,
+            prefer_live_edge=looks_like_live_source(source_uri),
         )
-        print(f"Source URI: {source_uri}", file=sys.stderr, flush=True)
-        print(f"RTSP endpoint: {endpoint_for(config)}", file=sys.stderr, flush=True)
-        print("Starting RTSP server...", file=sys.stderr, flush=True)
-        serve_forever(config, preview=args.preview)
+        endpoint = endpoint_for(config)
+        print(f"RTSP: {endpoint}", file=sys.stderr, flush=True)
+        if args.preview:
+            print("Status: opening preview...", file=sys.stderr, flush=True)
+        print("Status: serving", file=sys.stderr, flush=True)
+        if args.verbose:
+            print(f"Source URI: {source_uri}", file=sys.stderr, flush=True)
+        serve_forever(config, preview=args.preview, verbose=args.verbose)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

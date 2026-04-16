@@ -75,9 +75,10 @@ rtsp://127.0.0.1:8554/stream
 - `--host 0.0.0.0` to expose it outside localhost
 - `--path /live` to change the RTSP mount path
 - `--loop` to restart finite sources automatically when they reach the end
-- `--preview` to open a live preview window for the local RTSP stream using `ffplay`
-- `--video-bitrate 1200` to reduce CPU and bandwidth usage
+- `--preview` to open an always-on-top live preview window sized to one quarter of the screen
+- `--video-bitrate 2500` to reduce CPU and bandwidth usage if the default quality target is too heavy
 - `--direct` to use a media URI directly, for example `file:///tmp/video.mp4`
+- `--verbose` to show technical logs, resolved source details, and player output
 
 ## Examples
 
@@ -97,3 +98,5 @@ video2rtsp --preview "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 8554
 ```bash
 video2rtsp --direct "file:///tmp/sample.mp4" 8554
 ```
+
+For YouTube live streams with DVR, `video2rtsp` starts near the live edge. A few seconds of extra latency compared to the browser player is still normal.
