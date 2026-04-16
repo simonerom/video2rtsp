@@ -29,13 +29,17 @@ It is useful when you have a player, NVR, home automation bridge, or video tool 
 From a local checkout:
 
 ```bash
-pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 Or directly from GitHub:
 
 ```bash
-pip install git+https://github.com/simonerom/video2rtsp.git
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install git+https://github.com/simonerom/video2rtsp.git
 ```
 
 ## Usage
