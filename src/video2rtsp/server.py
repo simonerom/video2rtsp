@@ -29,6 +29,7 @@ class ServerConfig:
     path: str
     video_bitrate_kbps: int = 2500
     audio_bitrate_bps: int = 128000
+    loop: bool = False
 
 
 def normalise_mount_path(path: str) -> str:
@@ -82,6 +83,8 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
         self._config = config
         self._contexts: dict[int, dict[str, object]] = {}
         self._bus_watchers: list[Gst.Bus] = []
+        self._loop_durations: dict[int, int] = {}
+        self._loop_attempts: dict[int, int] = {}
         self.set_shared(True)
         self.set_suspend_mode(GstRtspServer.RTSPSuspendMode.NONE)
         self.connect("media-configure", self._on_media_configure)
@@ -91,9 +94,7 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
         if source_bin is None:
             raise RtspServerError("Could not create the GStreamer source bin")
 
-        source = _make("uridecodebin", "source")
-        source.set_property("uri", self._config.source_uri)
-        source.connect("pad-added", self._on_pad_added, source_bin)
+        source = self._new_source(source_bin)
         source_bin.add(source)
 
         video_sink = self._add_video_branch(source_bin)
@@ -103,8 +104,17 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
             "audio": False,
             "video_sink": video_sink,
             "audio_sink": audio_sink,
+            "source": source,
+            "restarting": False,
         }
         return source_bin
+
+    def _new_source(self, source_bin: Gst.Bin) -> Gst.Element:
+        source = _make("uridecodebin", "source")
+        source.set_property("uri", self._config.source_uri)
+        source.connect("pad-added", self._on_pad_added, source_bin)
+        source.connect("drained", self._on_source_drained, source_bin)
+        return source
 
     def _on_media_configure(self, factory: object, media: GstRtspServer.RTSPMedia) -> None:
         element = media.get_element()
@@ -116,10 +126,19 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
             return
 
         bus.add_signal_watch()
-        bus.connect("message", self._on_bus_message)
+        bus.connect("message", self._on_bus_message, element)
         self._bus_watchers.append(bus)
 
-    def _on_bus_message(self, bus: Gst.Bus, message: Gst.Message) -> None:
+        if self._config.loop:
+            self._loop_attempts[id(element)] = 0
+            GLib.timeout_add(100, self._enable_segment_looping, element)
+
+    def _on_bus_message(
+        self,
+        bus: Gst.Bus,
+        message: Gst.Message,
+        element: Gst.Element,
+    ) -> None:
         if message.type == Gst.MessageType.ERROR:
             error, debug = message.parse_error()
             LOGGER.error("GStreamer error: %s", error.message)
@@ -130,8 +149,77 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
             LOGGER.warning("GStreamer warning: %s", error.message)
             if debug:
                 LOGGER.debug("GStreamer debug: %s", debug)
+        elif message.type == Gst.MessageType.SEGMENT_DONE:
+            duration = self._loop_durations.get(id(element))
+            if duration:
+                LOGGER.info("Looping source back to the beginning")
+                if not self._seek_segment(element, duration):
+                    LOGGER.error("Could not restart the source for looping")
         elif message.type == Gst.MessageType.EOS:
             LOGGER.info("Source stream ended")
+
+    def _on_source_drained(self, source: Gst.Element, source_bin: Gst.Bin) -> None:
+        LOGGER.info("Source stream ended")
+        if not self._config.loop:
+            return
+
+        context = self._contexts[id(source_bin)]
+        if context["restarting"]:
+            return
+
+        LOGGER.info("Looping source back to the beginning")
+        context["restarting"] = True
+        GLib.idle_add(self._restart_source, source_bin)
+
+    def _restart_source(self, source_bin: Gst.Bin) -> bool:
+        context = self._contexts[id(source_bin)]
+        old_source = context["source"]
+
+        if not isinstance(old_source, Gst.Element):
+            context["restarting"] = False
+            return False
+
+        old_source.set_state(Gst.State.NULL)
+        source_bin.remove(old_source)
+
+        context["video"] = False
+        context["audio"] = False
+
+        new_source = self._new_source(source_bin)
+        source_bin.add(new_source)
+        new_source.sync_state_with_parent()
+
+        context["source"] = new_source
+        context["restarting"] = False
+        return False
+
+    def _enable_segment_looping(self, element: Gst.Element) -> bool:
+        attempts = self._loop_attempts.get(id(element), 0) + 1
+        self._loop_attempts[id(element)] = attempts
+
+        success, duration = element.query_duration(Gst.Format.TIME)
+        if not success or duration <= 0 or duration == Gst.CLOCK_TIME_NONE:
+            if attempts >= 50:
+                LOGGER.warning("Could not determine a finite duration for loop mode")
+                return False
+            return True
+
+        self._loop_durations[id(element)] = duration
+        if not self._seek_segment(element, duration):
+            LOGGER.error("Could not enable loop mode for this source")
+        return False
+
+    @staticmethod
+    def _seek_segment(element: Gst.Element, duration: int) -> bool:
+        return element.seek(
+            1.0,
+            Gst.Format.TIME,
+            Gst.SeekFlags.FLUSH | Gst.SeekFlags.SEGMENT | Gst.SeekFlags.KEY_UNIT,
+            Gst.SeekType.SET,
+            0,
+            Gst.SeekType.SET,
+            duration,
+        )
 
     def _on_pad_added(
         self,

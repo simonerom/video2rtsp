@@ -61,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Open a live preview window for the local RTSP stream",
     )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Loop finite sources when they reach the end",
+    )
     return parser
 
 
@@ -166,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             path=normalise_mount_path(args.path),
             video_bitrate_kbps=args.video_bitrate,
             audio_bitrate_bps=args.audio_bitrate,
+            loop=args.loop,
         )
         print(f"Source URI: {source_uri}", file=sys.stderr, flush=True)
         print(f"RTSP endpoint: {endpoint_for(config)}", file=sys.stderr, flush=True)
