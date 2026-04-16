@@ -24,9 +24,25 @@ It is useful when you have a player, NVR, home automation bridge, or video tool 
 - GStreamer with `PyGObject`, `Gst`, and `GstRtspServer`
 - GStreamer plugins for H.264/AAC: `x264enc`, `avenc_aac`, `rtph264pay`, `rtpmp4gpay`
 
+On recent macOS systems using Homebrew Python, install the runtime first:
+
+```bash
+brew install gstreamer gobject-introspection pygobject3 yt-dlp
+```
+
 ## Installation
 
+If you use Homebrew Python on macOS, create the virtualenv with system site packages so it can see `gi`.
+
 From a local checkout:
+
+```bash
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+On systems where `gi` is already available inside the virtualenv, the standard setup also works:
 
 ```bash
 python3 -m venv .venv
@@ -37,7 +53,7 @@ python -m pip install -e .
 Or directly from GitHub:
 
 ```bash
-python3 -m venv .venv
+python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 python -m pip install git+https://github.com/simonerom/video2rtsp.git
 ```

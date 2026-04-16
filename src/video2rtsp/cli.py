@@ -132,7 +132,22 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(args.verbose)
 
     try:
-        from .server import ServerConfig, endpoint_for, normalise_mount_path, serve_forever
+        try:
+            from .server import (
+                ServerConfig,
+                endpoint_for,
+                normalise_mount_path,
+                serve_forever,
+            )
+        except ModuleNotFoundError as exc:
+            if exc.name == "gi":
+                raise Video2RtspError(
+                    "Missing PyGObject (`gi`). On macOS/Homebrew run "
+                    "`brew install gstreamer gobject-introspection pygobject3 yt-dlp` "
+                    "and create the virtualenv with "
+                    "`python3 -m venv --system-site-packages .venv`."
+                ) from exc
+            raise
 
         source_uri = resolve_source_uri(args.url, direct=args.direct)
         config = ServerConfig(
