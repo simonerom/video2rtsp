@@ -21,6 +21,11 @@ classifiers = [
   "Topic :: Internet",
 ]
 
+[project.urls]
+Homepage = "https://github.com/simonerom/video2rtsp"
+Repository = "https://github.com/simonerom/video2rtsp"
+Issues = "https://github.com/simonerom/video2rtsp/issues"
+
 [project.scripts]
 video2rtsp = "video2rtsp.cli:main"
 
