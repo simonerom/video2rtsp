@@ -1,63 +1,63 @@
 # video2rtsp
 
-`video2rtsp` prende un URL YouTube e lo ripubblica come stream RTSP locale.
+`video2rtsp` takes a YouTube URL and republishes it as a local RTSP stream.
 
-E` utile quando hai un player, un NVR, un bridge domotico o un software video che sa leggere RTSP ma non URL web diretti.
+It is useful when you have a player, NVR, home automation bridge, or video tool that can consume RTSP but not direct web URLs.
 
-## A chi serve
+## Who It Is For
 
-- Home Assistant, NVR e automazioni che accettano RTSP
-- VLC, ffplay, OBS e client che preferiscono un endpoint RTSP
-- Tooling locale e test bench che devono consumare un video YouTube come se fosse una camera IP
+- Home Assistant, NVRs, and automation systems that accept RTSP
+- VLC, ffplay, OBS, and clients that prefer an RTSP endpoint
+- Local tooling and test benches that need to consume a YouTube video as if it were an IP camera
 
-## Come funziona
+## How It Works
 
-1. risolve il media URL con `yt-dlp`
-2. apre il flusso con GStreamer
-3. lo ri-encoda in H.264/AAC
-4. lo serve via RTSP su `localhost`
+1. Resolves the media URL with `yt-dlp`
+2. Opens the source with GStreamer
+3. Re-encodes it to H.264/AAC
+4. Serves it over RTSP on `localhost`
 
-## Requisiti
+## Requirements
 
 - Python 3.11+
 - `yt-dlp`
-- GStreamer con `PyGObject`, `Gst` e `GstRtspServer`
-- plugin GStreamer per H.264/AAC: `x264enc`, `avenc_aac`, `rtph264pay`, `rtpmp4gpay`
+- GStreamer with `PyGObject`, `Gst`, and `GstRtspServer`
+- GStreamer plugins for H.264/AAC: `x264enc`, `avenc_aac`, `rtph264pay`, `rtpmp4gpay`
 
-## Installazione
+## Installation
 
-Da checkout locale:
+From a local checkout:
 
 ```bash
 pip install -e .
 ```
 
-Oppure da GitHub:
+Or directly from GitHub:
 
 ```bash
 pip install git+https://github.com/simonerom/video2rtsp.git
 ```
 
-## Uso
+## Usage
 
 ```bash
 video2rtsp "https://www.youtube.com/watch?v=jNQXAC9IVRw" 8554
 ```
 
-Endpoint di default:
+Default endpoint:
 
 ```text
 rtsp://127.0.0.1:8554/stream
 ```
 
-## Opzioni utili
+## Useful Options
 
-- `--host 0.0.0.0` per esporlo fuori da localhost
-- `--path /live` per cambiare il mount RTSP
-- `--video-bitrate 1200` per ridurre CPU e banda
-- `--direct` per usare direttamente un media URI, ad esempio `file:///tmp/video.mp4`
+- `--host 0.0.0.0` to expose it outside localhost
+- `--path /live` to change the RTSP mount path
+- `--video-bitrate 1200` to reduce CPU and bandwidth usage
+- `--direct` to use a media URI directly, for example `file:///tmp/video.mp4`
 
-## Esempi
+## Examples
 
 ```bash
 video2rtsp "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 8554
