@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import subprocess
 from dataclasses import dataclass
 
 import gi
@@ -39,6 +40,21 @@ def normalise_mount_path(path: str) -> str:
 
 def endpoint_for(config: ServerConfig) -> str:
     return f"rtsp://{config.host}:{config.port}{config.path}"
+
+
+def preview_command(endpoint: str) -> list[str]:
+    return [
+        "ffplay",
+        "-window_title",
+        "video2rtsp preview",
+        "-rtsp_transport",
+        "tcp",
+        "-fflags",
+        "nobuffer",
+        "-flags",
+        "low_delay",
+        endpoint,
+    ]
 
 
 def _make(factory_name: str, name: str | None = None) -> Gst.Element:
@@ -212,7 +228,7 @@ class UriRtspFactory(GstRtspServer.RTSPMediaFactory):
             )
 
 
-def serve_forever(config: ServerConfig) -> None:
+def serve_forever(config: ServerConfig, preview: bool = False) -> None:
     server = GstRtspServer.RTSPServer()
     server.set_address(config.host)
     server.set_service(str(config.port))
@@ -227,13 +243,26 @@ def serve_forever(config: ServerConfig) -> None:
         raise RtspServerError("Could not attach the RTSP server to the GLib main loop")
 
     loop = GLib.MainLoop()
+    preview_process: subprocess.Popen[bytes] | None = None
+
+    def launch_preview() -> bool:
+        nonlocal preview_process
+        stream_endpoint = endpoint_for(config)
+        LOGGER.info("Opening preview window for %s", stream_endpoint)
+        preview_process = subprocess.Popen(preview_command(stream_endpoint))
+        return False
 
     def stop_loop(*_: object) -> None:
+        if preview_process is not None and preview_process.poll() is None:
+            preview_process.terminate()
         if loop.is_running():
             loop.quit()
 
     signal.signal(signal.SIGINT, stop_loop)
     signal.signal(signal.SIGTERM, stop_loop)
+
+    if preview:
+        GLib.timeout_add(250, launch_preview)
 
     LOGGER.info("Serving %s", endpoint_for(config))
     loop.run()

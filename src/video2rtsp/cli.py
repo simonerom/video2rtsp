@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable verbose logs",
     )
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Open a live preview window for the local RTSP stream",
+    )
     return parser
 
 
@@ -149,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
                 ) from exc
             raise
 
+        if args.preview:
+            ensure_command("ffplay")
+
+        print("Resolving source URL...", file=sys.stderr, flush=True)
         source_uri = resolve_source_uri(args.url, direct=args.direct)
         config = ServerConfig(
             source_uri=source_uri,
@@ -158,9 +167,10 @@ def main(argv: list[str] | None = None) -> int:
             video_bitrate_kbps=args.video_bitrate,
             audio_bitrate_bps=args.audio_bitrate,
         )
-        print(f"Source URI: {source_uri}", file=sys.stderr)
-        print(f"RTSP endpoint: {endpoint_for(config)}", file=sys.stderr)
-        serve_forever(config)
+        print(f"Source URI: {source_uri}", file=sys.stderr, flush=True)
+        print(f"RTSP endpoint: {endpoint_for(config)}", file=sys.stderr, flush=True)
+        print("Starting RTSP server...", file=sys.stderr, flush=True)
+        serve_forever(config, preview=args.preview)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

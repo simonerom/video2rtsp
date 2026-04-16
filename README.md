@@ -74,6 +74,7 @@ rtsp://127.0.0.1:8554/stream
 
 - `--host 0.0.0.0` to expose it outside localhost
 - `--path /live` to change the RTSP mount path
+- `--preview` to open a live preview window for the local RTSP stream using `ffplay`
 - `--video-bitrate 1200` to reduce CPU and bandwidth usage
 - `--direct` to use a media URI directly, for example `file:///tmp/video.mp4`
 
@@ -82,6 +83,10 @@ rtsp://127.0.0.1:8554/stream
 ```bash
 video2rtsp "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 8554
 ffplay rtsp://127.0.0.1:8554/stream
+```
+
+```bash
+video2rtsp --preview "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 8554
 ```
 
 ```bash
